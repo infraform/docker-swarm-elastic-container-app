@@ -1,0 +1,8 @@
+flask
+flask-mysql
+Jinja2
+MarkupSafe
+Werkzeug
+click
+gunicorn
+itsdangerous
