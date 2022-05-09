@@ -1,0 +1,392 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "This CloudFormation Template deploys Phonebook Application to five Docker Machines on EC2 Instances which are ready for Docker Swarm operations.\n",
+  "Parameters": {
+    "KeyPairName": {
+      "Type": "AWS::EC2::KeyPair::KeyName",
+      "Description": "Enter the name of your Key Pair for SSH connections.",
+      "ConstraintDescription": "Must be one of the existing EC2 KeyPair"
+    }
+  },
+  "Resources": {
+    "InstanceConnectPolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": ["ec2-instance-connect:SendSSHPublicKey"],
+              "Resource": [
+                {
+                  "Fn::Sub": "arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/*"
+                }
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "ec2:osuser": "ec2-user"
+                }
+              }
+            },
+            {
+              "Effect": "Allow",
+              "Action": ["ec2:DescribeInstances"],
+              "Resource": "*"
+            }
+          ]
+        }
+      }
+    },
+    "EC2InstanceConnect": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": ["ec2.amazonaws.com"]
+              },
+              "Action": ["sts:AssumeRole"]
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          {
+            "Ref": "InstanceConnectPolicy"
+          },
+          "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryFullAccess"
+        ]
+      }
+    },
+    "EC2ConnectProfile": {
+      "Type": "AWS::IAM::InstanceProfile",
+      "Properties": {
+        "Roles": [
+          {
+            "Ref": "EC2InstanceConnect"
+          }
+        ]
+      }
+    },
+    "DockerMachinesSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Enable SSH and HTTP for Docker Machines",
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 80,
+            "ToPort": 80,
+            "CidrIp": "0.0.0.0/0"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 22,
+            "ToPort": 22,
+            "CidrIp": "0.0.0.0/0"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 2377,
+            "ToPort": 2377,
+            "CidrIp": "0.0.0.0/0"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 7946,
+            "ToPort": 7946,
+            "CidrIp": "0.0.0.0/0"
+          },
+          {
+            "IpProtocol": "udp",
+            "FromPort": 7946,
+            "ToPort": 7946,
+            "CidrIp": "0.0.0.0/0"
+          },
+          {
+            "IpProtocol": "udp",
+            "FromPort": 4789,
+            "ToPort": 4789,
+            "CidrIp": "0.0.0.0/0"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 8080,
+            "ToPort": 8080,
+            "CidrIp": "0.0.0.0/0"
+          }
+        ]
+      }
+    },
+    "DockerSwarmManagerLT": {
+      "Type": "AWS::EC2::LaunchTemplate",
+      "Properties": {
+        "LaunchTemplateData": {
+          "ImageId": "ami-0947d2ba12ee1ff75",
+          "InstanceType": "t2.micro",
+          "KeyName": {
+            "Ref": "KeyPairName"
+          },
+          "IamInstanceProfile": {
+            "Arn": {
+              "Fn::GetAtt": ["EC2ConnectProfile", "Arn"]
+            }
+          },
+          "SecurityGroupIds": [
+            {
+              "Fn::GetAtt": ["DockerMachinesSecurityGroup", "GroupId"]
+            }
+          ],
+          "UserData": {
+            "Fn::Base64": {
+              "Fn::Sub": "#! /bin/bash\nyum update -y\namazon-linux-extras install docker -y\nsystemctl start docker\nsystemctl enable docker\nusermod -a -G docker ec2-user\ncurl -L \"https://github.com/docker/compose/releases/download/1.26.2/docker-compose-$(uname -s)-$(uname -m)\" \\\n-o /usr/local/bin/docker-compose\nchmod +x /usr/local/bin/docker-compose\nyum install python3 -y\npip3 install ec2instanceconnectcli\neval \"$(mssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no  \\\n  --region ${AWS::Region} ${DockerManager1} docker swarm join-token manager | grep -i 'docker')\"\n# uninstall aws cli version 1\nrm -rf /bin/aws\ncurl \"https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip\" -o \"awscliv2.zip\"\nunzip awscliv2.zip\n./aws/install\nyum install amazon-ecr-credential-helper -y\nmkdir -p /home/ec2-user/.docker\ncd /home/ec2-user/.docker\necho '{\"credsStore\": \"ecr-login\"}' > config.json\n"
+            }
+          }
+        }
+      }
+    },
+    "DockerSwarmWorkerLT": {
+      "Type": "AWS::EC2::LaunchTemplate",
+      "Properties": {
+        "LaunchTemplateData": {
+          "ImageId": "ami-0947d2ba12ee1ff75",
+          "InstanceType": "t2.micro",
+          "KeyName": {
+            "Ref": "KeyPairName"
+          },
+          "IamInstanceProfile": {
+            "Arn": {
+              "Fn::GetAtt": ["EC2ConnectProfile", "Arn"]
+            }
+          },
+          "SecurityGroupIds": [
+            {
+              "Fn::GetAtt": ["DockerMachinesSecurityGroup", "GroupId"]
+            }
+          ],
+          "UserData": {
+            "Fn::Base64": {
+              "Fn::Sub": "#! /bin/bash\nyum update -y\namazon-linux-extras install docker -y\nsystemctl start docker\nsystemctl enable docker\nusermod -a -G docker ec2-user\ncurl -L \"https://github.com/docker/compose/releases/download/1.26.2/docker-compose-$(uname -s)-$(uname -m)\" \\\n-o /usr/local/bin/docker-compose\nchmod +x /usr/local/bin/docker-compose\nyum install python3 -y\npip3 install ec2instanceconnectcli\neval \"$(mssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no  \\\n  --region ${AWS::Region} ${DockerManager1} docker swarm join-token worker | grep -i 'docker')\"\n# uninstall aws cli version 1\nrm -rf /bin/aws\ncurl \"https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip\" -o \"awscliv2.zip\"\nunzip awscliv2.zip\n./aws/install\nyum install amazon-ecr-credential-helper -y\nmkdir -p /home/ec2-user/.docker\ncd /home/ec2-user/.docker\necho '{\"credsStore\": \"ecr-login\"}' > config.json\n"
+            }
+          }
+        }
+      }
+    },
+    "DockerManager1": {
+      "Type": "AWS::EC2::Instance",
+      "DependsOn": [
+        "DockerMachinesSecurityGroup",
+        "InstanceConnectPolicy",
+        "EC2InstanceConnect"
+      ],
+      "Properties": {
+        "ImageId": "ami-0947d2ba12ee1ff75",
+        "InstanceType": "t2.micro",
+        "KeyName": {
+          "Ref": "KeyPairName"
+        },
+        "IamInstanceProfile": {
+          "Ref": "EC2ConnectProfile"
+        },
+        "SecurityGroupIds": [
+          {
+            "Fn::GetAtt": ["DockerMachinesSecurityGroup", "GroupId"]
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "Docker Grand Master Manager 1st of ${AWS::StackName}"
+            }
+          }
+        ],
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Sub": [
+              "#! /bin/bash\nyum update -y\nhostnamectl set-hostname Grand-Master\namazon-linux-extras install docker -y\nsystemctl start docker\nsystemctl enable docker\nusermod -a -G docker ec2-user\ncurl -L \"https://github.com/docker/compose/releases/download/1.26.2/docker-compose-$(uname -s)-$(uname -m)\" \\\n-o /usr/local/bin/docker-compose\nchmod +x /usr/local/bin/docker-compose\ndocker swarm init\naws ecr get-login-password --region ${AWS::Region} | docker login --username AWS --password-stdin ${ECR_REGISTRY}\ndocker service create \\\n  --name=viz \\\n  --publish=8080:8080/tcp \\\n  --constraint=node.role==manager \\\n  --mount=type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock \\\n  dockersamples/visualizer\nyum install git -y\n# uninstall aws cli version 1\nrm -rf /bin/aws\ncurl \"https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip\" -o \"awscliv2.zip\"\nunzip awscliv2.zip\n./aws/install\nyum install amazon-ecr-credential-helper -y\nmkdir -p /home/ec2-user/.docker\ncd /home/ec2-user/.docker\necho '{\"credsStore\": \"ecr-login\"}' > config.json\naws ecr create-repository \\\n    --repository-name ${APP_REPO_NAME} \\\n    --image-scanning-configuration scanOnPush=false \\\n    --image-tag-mutability MUTABLE \\\n    --region ${AWS::Region}\ndocker build --force-rm -t \"${ECR_REGISTRY}/${APP_REPO_NAME}:latest\" ${GITHUB_REPO}\ndocker push \"${ECR_REGISTRY}/${APP_REPO_NAME}:latest\"\nmkdir -p /home/ec2-user/phonebook\ncd /home/ec2-user/phonebook\ncat << EOF | tee .env\nECR_REGISTRY=${ECR_REGISTRY}\nAPP_REPO_NAME=${APP_REPO_NAME}\nEOF\ncurl -o \"docker-compose.yml\" -L ${GIT_FILE_URL}docker-compose.yml\ncurl -o \"init.sql\" -L ${GIT_FILE_URL}init.sql\ndocker-compose config | docker stack deploy --with-registry-auth -c - phonebook\n",
+              {
+                "ECR_REGISTRY": {
+                  "Fn::Sub": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com"
+                },
+                "APP_REPO_NAME": "infraform-repo/phonebook-app",
+                "GITHUB_REPO": "https://github.com/infraform/docker-swarm-elastic-container-app.git",
+                "GIT_FILE_URL": "https://raw.githubusercontent.com/infraform/docker-swarm-elastic-container-app/master/"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "DockerManager2": {
+      "Type": "AWS::EC2::Instance",
+      "DependsOn": ["DockerManager1"],
+      "Properties": {
+        "LaunchTemplate": {
+          "LaunchTemplateId": {
+            "Ref": "DockerSwarmManagerLT"
+          },
+          "Version": {
+            "Fn::GetAtt": ["DockerSwarmManagerLT", "LatestVersionNumber"]
+          }
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "Docker Manager 2nd of ${AWS::StackName}"
+            }
+          }
+        ]
+      }
+    },
+    "DockerManager3": {
+      "Type": "AWS::EC2::Instance",
+      "DependsOn": ["DockerManager2"],
+      "Properties": {
+        "LaunchTemplate": {
+          "LaunchTemplateId": {
+            "Ref": "DockerSwarmManagerLT"
+          },
+          "Version": {
+            "Fn::GetAtt": ["DockerSwarmManagerLT", "LatestVersionNumber"]
+          }
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "Docker Manager 3rd of ${AWS::StackName}"
+            }
+          }
+        ]
+      }
+    },
+    "DockerWorker1": {
+      "Type": "AWS::EC2::Instance",
+      "DependsOn": ["DockerManager1"],
+      "Properties": {
+        "LaunchTemplate": {
+          "LaunchTemplateId": {
+            "Ref": "DockerSwarmWorkerLT"
+          },
+          "Version": {
+            "Fn::GetAtt": ["DockerSwarmWorkerLT", "LatestVersionNumber"]
+          }
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "Docker Worker 1st of ${AWS::StackName}"
+            }
+          }
+        ]
+      }
+    },
+    "DockerWorker2": {
+      "Type": "AWS::EC2::Instance",
+      "DependsOn": ["DockerWorker1"],
+      "Properties": {
+        "LaunchTemplate": {
+          "LaunchTemplateId": {
+            "Ref": "DockerSwarmWorkerLT"
+          },
+          "Version": {
+            "Fn::GetAtt": ["DockerSwarmWorkerLT", "LatestVersionNumber"]
+          }
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "Docker Worker 2nd of ${AWS::StackName}"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "1stDockerManagerDashboard": {
+      "Description": "Dashboard for Docker Swarm Cluster",
+      "Value": {
+        "Fn::Sub": [
+          "http://${PublicAddress}:8080",
+          {
+            "PublicAddress": {
+              "Fn::GetAtt": ["DockerManager1", "PublicDnsName"]
+            }
+          }
+        ]
+      }
+    },
+    "1stDockerManagerDNSName": {
+      "Description": "Docker Manager 1st DNS Name",
+      "Value": {
+        "Fn::Sub": [
+          "${PublicAddress}",
+          {
+            "PublicAddress": {
+              "Fn::GetAtt": ["DockerManager1", "PublicDnsName"]
+            }
+          }
+        ]
+      }
+    },
+    "2ndDockerManagerDNSName": {
+      "Description": "Docker Manager 2nd DNS Name",
+      "Value": {
+        "Fn::Sub": [
+          "${PublicAddress}",
+          {
+            "PublicAddress": {
+              "Fn::GetAtt": ["DockerManager2", "PublicDnsName"]
+            }
+          }
+        ]
+      }
+    },
+    "3rdDockerManagerDNSName": {
+      "Description": "Docker Manager 3rd DNS Name",
+      "Value": {
+        "Fn::Sub": [
+          "${PublicAddress}",
+          {
+            "PublicAddress": {
+              "Fn::GetAtt": ["DockerManager3", "PublicDnsName"]
+            }
+          }
+        ]
+      }
+    },
+    "1stDockerWorkerDNSName": {
+      "Description": "Docker Worker 1st DNS Name",
+      "Value": {
+        "Fn::Sub": [
+          "${PublicAddress}",
+          {
+            "PublicAddress": {
+              "Fn::GetAtt": ["DockerWorker1", "PublicDnsName"]
+            }
+          }
+        ]
+      }
+    },
+    "2ndDockerWorkerDNSName": {
+      "Description": "Docker Worker 2nd DNS Name",
+      "Value": {
+        "Fn::Sub": [
+          "${PublicAddress}",
+          {
+            "PublicAddress": {
+              "Fn::GetAtt": ["DockerWorker2", "PublicDnsName"]
+            }
+          }
+        ]
+      }
+    }
+  }
+}
